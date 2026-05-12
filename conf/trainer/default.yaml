@@ -1,0 +1,9 @@
+_target_: pytorch_lightning.Trainer
+accelerator: gpu
+devices: [0]
+max_epochs: ${training.epochs}
+strategy: ddp_find_unused_parameters_true
+
+callbacks:
+  - _target_: pytorch_lightning.callbacks.LearningRateMonitor
+    logging_interval: epoch

@@ -1,0 +1,42 @@
+defaults:
+  - model: LC
+  - data: manifold40
+  - trainer: default
+  - optimizer: adam
+  - scheduler: step_lr
+  - _self_
+
+seed: 42
+
+paths:
+  data_root: ./datasets
+  trained_dir: trained
+  make_sphere_dir: trained_make_sphere
+
+training:
+  batch_size: 1
+  epochs: 1000
+  epochs_sphere: 200
+  lmbda: 1.0
+  norm: false
+
+loss:
+  distortion: wrappingnet.losses.multiscale_l2
+  eval: wrappingnet.losses.l2
+
+checkpoint:
+  pretrain_path: null
+  make_sphere_path: null
+  save: true
+  save_name: MeshAE_${loss.name}_${data.name}_d${model.net.feature_dim}${model.tag}.ckpt
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: false
+
+loss:
+  name: MSL2
+  distortion: wrappingnet.losses.multiscale_l2
+  eval: wrappingnet.losses.l2

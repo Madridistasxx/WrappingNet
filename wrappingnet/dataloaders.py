@@ -10,8 +10,6 @@
 import glob
 import os
 import os.path as osp
-import sys
-from pathlib import Path
 
 import numpy as np
 import open3d
@@ -20,22 +18,6 @@ import torch_geometric
 import tqdm
 from pytorch_lightning import LightningDataModule
 from torch_geometric.data import InMemoryDataset
-
-mt_dir = Path(__file__).resolve().parents[2] / "MT_3967"
-sys.path.insert(0, str(mt_dir))
-
-from src.data.ddacs import SurfaceDDACS
-from src.data.tools import ToolsData
-
-
-def get_data_lightning(args):
-    if args.data_name == "manifold40":
-        return manifold40(data_dir=f"{args.data_root}/Manifold40")
-    elif args.data_name == "ddacs":
-        return SurfaceDDACS(root="/mnt/data/datasets/ddacs", batch_size=args.batch_size)
-    elif args.data_name == "tools":
-        return ToolsData(root="/mnt/data/datasets/tools", ddacs_only=True)
-
 
 def get_base_mesh(data, n_iter=3):
     # assumes faces

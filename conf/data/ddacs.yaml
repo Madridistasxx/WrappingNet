@@ -1,0 +1,6 @@
+name: ddacs
+
+datamodule:
+  _target_: src.data.ddacs.SurfaceDDACS
+  root: ${paths.data_root}/ddacs
+  batch_size: ${training.batch_size}

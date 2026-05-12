@@ -1,0 +1,7 @@
+tag: LC
+
+net:
+  _target_: wrappingnet.models.WrappingNet_sphere_LC
+  input_dim: 7
+  feature_dim: 512
+  num_loop: 3

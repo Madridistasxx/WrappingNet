@@ -1,0 +1,6 @@
+name: manifold40
+
+datamodule:
+  _target_: wrappingnet.dataloaders.manifold40
+  data_dir: ${paths.data_root}/Manifold40
+  batch_size: ${training.batch_size}

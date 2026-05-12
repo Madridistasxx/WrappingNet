@@ -1,0 +1,6 @@
+name: tools
+
+datamodule:
+  _target_: src.data.tools.ToolsData
+  root: ${paths.data_root}/tools
+  ddacs_only: true

@@ -1,0 +1,7 @@
+tag: global_basesup3
+
+net:
+  _target_: wrappingnet.models.WrappingNet_global_basesup3
+  input_dim: 7
+  feature_dim: 512
+  num_loop: 3
