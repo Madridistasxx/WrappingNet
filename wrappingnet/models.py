@@ -78,18 +78,40 @@ class WrappingNet_sphere_LC(torch.nn.Module):
             norm=None,
         )
 
-    def forward(self, pos, faces, pos_base, FAF=None):
-        face_base, features = self.encoder(pos, faces)
+    def forward(self, pos, faces, pos_base, FAF_hierarchy=None):
+        """
+        FAF_hierarchy should be a dict:
+            {
+                "l0": FAF_l0,
+                "l1": FAF_l1,
+                "l2": FAF_l2,
+                "l3": FAF_l3,
+            }
+        """
+        if FAF_hierarchy is None:
+            FAF_l0 = FAF_l1 = FAF_l2 = FAF_l3 = None
+        else:
+            FAF_l0 = FAF_hierarchy["l0"]
+            FAF_l1 = FAF_hierarchy["l1"]
+            FAF_l2 = FAF_hierarchy["l2"]
+            FAF_l3 = FAF_hierarchy["l3"]
+
+        encoder_FAF = [FAF_l3, FAF_l2, FAF_l1, FAF_l0]
+        decoder_FAF = [FAF_l0, FAF_l1, FAF_l2, FAF_l3]
+
+        face_base, features = self.encoder(pos, faces, encoder_FAF)
         with torch.no_grad():
-            pos_base = self.make_sphere(pos_base, face_base, FAF)
-            pos_sphere = 10 * utils.gen_sphere_samples(int(face_base.max().item()) + 1).to(pos_base.device)
+            pos_base = self.make_sphere(pos_base, face_base, FAF_l0)
+            pos_sphere = 10 * utils.gen_sphere_samples(
+                int(face_base.max().item()) + 1
+            ).to(pos_base.device)
             idx = losses.chamfer_forward_idx(pos_sphere, pos_base).squeeze()
             pos_base = pos_sphere[idx]
         features = self.mlp(features)
         latent_code = torch.max(features, dim=0)[0].unsqueeze(0)
         latent_code = self.mlp2(latent_code).squeeze()
         features = latent_code.repeat(features.shape[0], 1)
-        pos_list, face_list = self.decoder(pos_base, face_base, features)
+        pos_list, face_list = self.decoder(pos_base, face_base, features, decoder_FAF)
         return pos_list, face_list, pos_base
 
 
@@ -153,16 +175,51 @@ class Encoder(torch.nn.Module):
         self.conv3 = FaceConv(hidden_dim, hidden_dim)
         self.conv4 = FaceConv(hidden_dim, self.feature_dim)
 
-    def forward(self, pos, faces):
+    def forward(self, pos, faces, FAF_list=None):
+        """
+        pos:   target level pos, usually l3
+        faces: target level faces, usually l3
+
+        FAF_list should be:
+            [FAF_l3, FAF_l2, FAF_l1, FAF_l0]
+        """
+
+        if FAF_list is None:
+            FAF_l3 = FAF_l2 = FAF_l1 = FAF_l0 = None
+        else:
+            FAF_l3, FAF_l2, FAF_l1, FAF_l0 = FAF_list
+
+        # Level 3
         face_features = torch.relu(
-            self.conv1(faces, utils.extract_features(pos, faces))
+            self.conv1(
+                faces,
+                utils.extract_features(pos, faces, FAF_l3),
+                FAF_l3,
+            )
         )
+
+        # l3 -> l2
         faces, face_features = self.pool(faces, face_features)
-        face_features = torch.relu(self.conv2(faces, face_features))
+
+        # Level 2
+        face_features = torch.relu(self.conv2(faces, face_features, FAF_l2))
+
+        # l2 -> l1
         faces, face_features = self.pool(faces, face_features)
-        face_features = torch.relu(self.conv3(faces, face_features))
+
+        # Level 1
+        face_features = torch.relu(self.conv3(faces, face_features, FAF_l1))
+
+        # l1 -> l0
         faces, face_features = self.pool(faces, face_features)
-        face_features = self.conv4(faces, face_features)
+
+        # Level 0
+        face_features = self.conv4(
+            faces,
+            face_features,
+            FAF_l0,
+        )
+
         return faces, face_features
 
 
@@ -184,9 +241,7 @@ class MakeSphere(torch.nn.Module):
 
     def forward(self, pos, faces, FAF=None):
         local_feats = utils.extract_features_local(pos, faces, FAF)
-        face_features = torch.relu(
-            self.conv1(faces, local_feats, FAF)
-        )
+        face_features = torch.relu(self.conv1(faces, local_feats, FAF))
         face_features = torch.relu(self.conv1a(faces, face_features, FAF))
         _, pos, face_features = self.f2n1(pos, faces, face_features)
 
@@ -233,70 +288,85 @@ class Decoder_basesup3(torch.nn.Module):
         # self.conv6_sphere = FaceConv(hidden_dim, hidden_dim)
         # self.f2n6_sphere = Face2Node(hidden_dim, hidden_dim2)
 
-    def forward(self, pos, faces, input_feature=None):
-        # pos: [num_pos_base, 3]
-        # faces: [num_face_base, 3]
-        # input_features: optional, [num_face_base, feature_dim]
+    def forward(self, pos, faces, input_feature=None, FAF_list=None):
+        """
+        pos:   l0 base pos
+        faces: l0 base faces
+
+        FAF_list should be:
+            [FAF_l0, FAF_l1, FAF_l2, FAF_l3]
+        """
+
+        if FAF_list is None:
+            FAF_l0 = FAF_l1 = FAF_l2 = FAF_l3 = None
+        else:
+            FAF_l0, FAF_l1, FAF_l2, FAF_l3 = FAF_list
+
         pos_list = []
         face_list = []
 
-        # if input_feature is None:
-        #     input_feature = torch.ones((faces.shape[0], self.feature_dim)).to(pos.device)
+        # ----- Level 0: unmake sphere -----
         face_features = torch.cat(
-            (utils.extract_features(pos, faces), input_feature), dim=1
+            (
+                utils.extract_features(pos, faces, FAF_l0),
+                input_feature,
+            ),
+            dim=1,
         )
-        # face_features = input_feature
 
-        # unmake sphere
-        face_features = torch.relu(self.conv1_sphere(faces, face_features))
+        face_features = torch.relu(self.conv1_sphere(faces, face_features, FAF_l0))
         _, pos, face_features = self.f2n1_sphere(pos, faces, face_features)
-        # face_features = self.mid1(face_features)
-        face_features = torch.relu(self.conv2_sphere(faces, face_features))
+
+        face_features = torch.relu(self.conv2_sphere(faces, face_features, FAF_l0))
         _, pos, face_features = self.f2n2_sphere(pos, faces, face_features)
-        # face_features = self.mid2(face_features)
-        face_features = torch.relu(self.conv3_sphere(faces, face_features))
+
+        face_features = torch.relu(self.conv3_sphere(faces, face_features, FAF_l0))
         _, pos, face_features = self.f2n3_sphere(pos, faces, face_features)
-        # face_features = self.mid3(face_features)
-        # face_features = torch.relu(self.conv4_sphere(faces, face_features))
-        # _, pos, face_features = self.f2n4_sphere(pos, faces, face_features)
-        # # face_features = self.mid4(face_features)
-        # face_features = torch.relu(self.conv5_sphere(faces, face_features))
-        # _, pos, face_features = self.f2n5_sphere(pos, faces, face_features)
-        # # face_features = self.mid5(face_features)
-        # face_features = torch.relu(self.conv6_sphere(faces, face_features))
-        # _, pos, face_features = self.f2n6_sphere(pos, faces, face_features)
+
         pos_list.append(pos)
         face_list.append(faces)
 
-        # face_features = torch.cat((utils.extract_features(pos, faces), face_features), dim=1)
-        face_features = torch.cat((face_features, input_feature), dim=1)
-        pos, faces, face_features = self.unpool(
-            pos, faces, face_features, mode=self.interp_mode
+        face_features = torch.cat(
+            (
+                face_features,
+                input_feature,
+            ),
+            dim=1,
         )
-        face_features = torch.relu(self.conv1(faces, face_features))
+
+        # ----- l0 -> l1 -----
+        pos, faces, face_features = self.unpool(
+            pos,
+            faces,
+            face_features,
+            mode=self.interp_mode,
+        )
+
+        face_features = torch.relu(self.conv1(faces, face_features, FAF_l1))
         _, pos, face_features = self.f2n1(pos, faces, face_features)
-        # pos_list.append(pos)
-        # face_list.append(faces)
-        # from_nodes = self.n2f1(pos, faces)
 
-        # print(face_features)
-        # face_features = torch.cat((utils.extract_features(pos, faces), face_features), dim=1)
-        # print(face_features)
+        # ----- l1 -> l2 -----
         pos, faces, face_features = self.unpool(
-            pos, faces, face_features, mode=self.interp_mode
+            pos,
+            faces,
+            face_features,
+            mode=self.interp_mode,
         )
-        face_features = torch.relu(self.conv2(faces, face_features))
+
+        face_features = torch.relu(self.conv2(faces, face_features, FAF_l2))
         _, pos, face_features = self.f2n2(pos, faces, face_features)
-        # pos_list.append(pos)
-        # face_list.append(faces)
-        # from_nodes = self.n2f2(pos, faces)
 
-        # face_features = torch.cat((utils.extract_features(pos, faces), face_features), dim=1)
+        # ----- l2 -> l3 -----
         pos, faces, face_features = self.unpool(
-            pos, faces, face_features, mode=self.interp_mode
+            pos,
+            faces,
+            face_features,
+            mode=self.interp_mode,
         )
-        face_features = torch.relu(self.conv3(faces, face_features))
+
+        face_features = torch.relu(self.conv3(faces, face_features, FAF_l3))
         _, pos, _ = self.f2n3(pos, faces, face_features)
+
         pos_list.append(pos)
         face_list.append(faces)
 

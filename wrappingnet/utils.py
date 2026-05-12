@@ -122,7 +122,7 @@ def compute_face_adjacency(faces):
     return FAF
 
 
-def extract_features(pos, faces):
+def extract_features(pos, faces, FAF=None):
     # order invariant features
     vecs1 = pos[faces[:, 1]] - pos[faces[:, 0]]
     vecs2 = pos[faces[:, 2]] - pos[faces[:, 1]]
@@ -134,7 +134,8 @@ def extract_features(pos, faces):
     area_sq = s * (s - a) * (s - b) * (s - c)
     face_normals = torch.cross(vecs1, vecs2, dim=1)
     center_pos = (pos[faces[:, 0]] + pos[faces[:, 1]] + pos[faces[:, 2]]) / 3
-    FAF = compute_face_adjacency(faces)
+    if FAF is None:
+        FAF = compute_face_adjacency(faces)
     pos0, pos1, pos2 = pos[faces[:, 0]], pos[faces[:, 1]], pos[faces[:, 2]]
     center_neigh0 = (pos0[FAF[:, 0]] + pos1[FAF[:, 0]] + pos2[FAF[:, 0]]) / 3
     center_neigh1 = (pos0[FAF[:, 1]] + pos1[FAF[:, 1]] + pos2[FAF[:, 1]]) / 3
