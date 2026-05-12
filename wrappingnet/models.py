@@ -78,11 +78,11 @@ class WrappingNet_sphere_LC(torch.nn.Module):
             norm=None,
         )
 
-    def forward(self, pos, faces, pos_base):
+    def forward(self, pos, faces, pos_base, FAF=None):
         face_base, features = self.encoder(pos, faces)
         with torch.no_grad():
-            pos_base = self.make_sphere(pos_base, face_base)
-            pos_sphere = 10 * utils.gen_sphere_samples(10000).to(pos_base.device)
+            pos_base = self.make_sphere(pos_base, face_base, FAF)
+            pos_sphere = 10 * utils.gen_sphere_samples(int(face_base.max().item()) + 1).to(pos_base.device)
             idx = losses.chamfer_forward_idx(pos_sphere, pos_base).squeeze()
             pos_base = pos_sphere[idx]
         features = self.mlp(features)
@@ -182,19 +182,20 @@ class MakeSphere(torch.nn.Module):
         self.conv3a = FaceConv(hidden_dim, hidden_dim)
         self.f2n3 = Face2Node(hidden_dim, 0)
 
-    def forward(self, pos, faces):
+    def forward(self, pos, faces, FAF=None):
+        local_feats = utils.extract_features_local(pos, faces, FAF)
         face_features = torch.relu(
-            self.conv1(faces, utils.extract_features_local(pos, faces))
+            self.conv1(faces, local_feats, FAF)
         )
-        face_features = torch.relu(self.conv1a(faces, face_features))
+        face_features = torch.relu(self.conv1a(faces, face_features, FAF))
         _, pos, face_features = self.f2n1(pos, faces, face_features)
 
-        face_features = torch.relu(self.conv2(faces, face_features))
-        face_features = torch.relu(self.conv2a(faces, face_features))
+        face_features = torch.relu(self.conv2(faces, face_features, FAF))
+        face_features = torch.relu(self.conv2a(faces, face_features, FAF))
         _, pos, face_features = self.f2n2(pos, faces, face_features)
 
-        face_features = torch.relu(self.conv3(faces, face_features))
-        face_features = torch.relu(self.conv3a(faces, face_features))
+        face_features = torch.relu(self.conv3(faces, face_features, FAF))
+        face_features = torch.relu(self.conv3a(faces, face_features, FAF))
         _, pos, _ = self.f2n3(pos, faces, face_features)
         return pos
 

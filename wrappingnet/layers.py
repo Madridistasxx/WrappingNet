@@ -25,11 +25,12 @@ class FaceConv(torch.nn.Module):
         kernel_size = 4
         self.conv2d = nn.Conv2d(in_channels, out_channels, (1, kernel_size), bias=True)
 
-    def forward(self, faces, face_features):
+    def forward(self, faces, face_features, FAF=None):
         # face_features: [num_faces, num_channels]
-        CKP = utils.compute_face_adjacency(
-            faces
-        )  # conv kernel pattern: [num_faces, num_neighbors]
+        if FAF is None:
+            CKP = utils.compute_face_adjacency(faces)
+        else:
+            CKP = FAF  # conv kernel pattern: [num_faces, num_neighbors]
         num_neighbors = CKP.shape[1]
         conv_feats = face_features[CKP].permute(
             2, 0, 1

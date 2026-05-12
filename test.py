@@ -80,9 +80,11 @@ class WrappingNetLightning(LightningModule):
 
         pos_target = data.pos_l3
         faces_target = data.face_l3.T.contiguous()
+        FAF_base = data.FAF_l0.to(pos_base.device)
 
         if self.current_epoch < self.epochs_sphere:
-            pos_sphere = self.model.make_sphere(pos_base, faces_base)
+            
+            pos_sphere = self.model.make_sphere(pos_base, faces_base, FAF_base)
             loss = losses.base_loss(pos_sphere, scale=10)
             self.log_dict(
                 {"train_base": loss.item(), "step": self.current_epoch * 1.0},
@@ -92,7 +94,7 @@ class WrappingNetLightning(LightningModule):
                 batch_size=1,
             )
         else:
-            pos_list, face_list, _ = self.model(pos_target, faces_target, pos_base)
+            pos_list, face_list, _ = self.model(pos_target, faces_target, pos_base, FAF_base)
             rate = torch.tensor(0.0)
             distortion_loss = self.distortion_func(
                 pos_list, face_list, pos_target, faces_target
@@ -131,7 +133,8 @@ class WrappingNetLightning(LightningModule):
         faces_target = data.face_l3.T.contiguous()
 
         if self.current_epoch < self.epochs_sphere:
-            pos_sphere = self.model.make_sphere(pos_base, faces_base)
+            FAF_base = data.FAF_l0.to(pos_base.device)
+            pos_sphere = self.model.make_sphere(pos_base, faces_base, FAF_base)
             loss = losses.base_loss(pos_sphere, scale=10)
             self.log_dict(
                 {"val_base": loss.item(), "step": self.current_epoch * 1.0},

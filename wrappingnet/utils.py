@@ -27,24 +27,24 @@ def get_base_mesh(pos, faces, n_iter=3):
 
 def compute_face_adjacency(faces):
     """
-    Robust face adjacency for triangle meshes.
+    Fast boundary-safe face adjacency.
 
     faces: [F, 3]
 
-    Returns:
+    return:
         FAF: [F, 3]
-        FAF[i, j] = neighboring face id across local edge j.
-        For boundary edges, use the face itself as neighbor.
-        For non-manifold edges, choose one other adjacent face.
+        FAF[i, j] = neighboring face across local edge j.
+        Boundary edge: FAF[i, j] = i.
+        Non-manifold edge: choose one other adjacent face.
     """
     faces = faces.long().contiguous()
     device = faces.device
-    num_faces = faces.shape[0]
+    F = faces.shape[0]
 
-    # Local edges:
-    # edge 0: v0-v1
-    # edge 1: v1-v2
-    # edge 2: v2-v0
+    # Keep the same local edge order as the current dev version:
+    # local 0: v0-v1
+    # local 1: v1-v2
+    # local 2: v2-v0
     edges = torch.cat(
         (
             faces[:, [0, 1]],
@@ -53,58 +53,71 @@ def compute_face_adjacency(faces):
         ),
         dim=0,
     )
-
     edges = torch.sort(edges, dim=1)[0]
 
-    face_ids = torch.cat(
+    face_ids = torch.arange(F, device=device).repeat(3)
+
+    local_ids = torch.cat(
         (
-            torch.arange(num_faces, device=device),
-            torch.arange(num_faces, device=device),
-            torch.arange(num_faces, device=device),
+            torch.zeros(F, dtype=torch.long, device=device),
+            torch.ones(F, dtype=torch.long, device=device),
+            2 * torch.ones(F, dtype=torch.long, device=device),
         ),
         dim=0,
     )
 
-    local_edge_ids = torch.cat(
-        (
-            torch.zeros(num_faces, dtype=torch.long, device=device),
-            torch.ones(num_faces, dtype=torch.long, device=device),
-            2 * torch.ones(num_faces, dtype=torch.long, device=device),
-        ),
-        dim=0,
-    )
-
-    unique_edges, inverse = torch.unique(
+    unique_edges, inverse, counts = torch.unique(
         edges,
         dim=0,
         return_inverse=True,
+        return_counts=True,
     )
 
     # Default: boundary edge points to self.
-    FAF = torch.arange(num_faces, device=device).view(-1, 1).repeat(1, 3)
+    FAF = torch.arange(F, device=device).view(F, 1).repeat(1, 3)
 
-    # Python loop is okay for l0. Your l0 has ~27k faces.
-    for edge_id in range(unique_edges.shape[0]):
-        idx = torch.nonzero(inverse == edge_id, as_tuple=False).flatten()
+    # Sort half-edges by edge id.
+    order = torch.argsort(inverse)
+    face_sorted = face_ids[order]
+    local_sorted = local_ids[order]
 
-        if idx.numel() == 1:
-            # Boundary edge: keep self-neighbor.
-            continue
+    starts = torch.cumsum(counts, dim=0) - counts
 
-        faces_on_edge = face_ids[idx]
-        locals_on_edge = local_edge_ids[idx]
+    # Fast path: normal manifold edges, count == 2.
+    mask2 = counts == 2
+    starts2 = starts[mask2]
 
-        for k in range(idx.numel()):
-            f = faces_on_edge[k]
-            le = locals_on_edge[k]
+    if starts2.numel() > 0:
+        p0 = starts2
+        p1 = starts2 + 1
 
-            others = faces_on_edge[faces_on_edge != f]
+        f0 = face_sorted[p0]
+        f1 = face_sorted[p1]
+        l0 = local_sorted[p0]
+        l1 = local_sorted[p1]
 
-            if others.numel() == 0:
-                FAF[f, le] = f
-            else:
-                # If non-manifold, just pick the first other face.
+        FAF[f0, l0] = f1
+        FAF[f1, l1] = f0
+
+    # Rare path: non-manifold edges, count > 2.
+    # Usually few or zero. Python loop here is acceptable.
+    mask_gt2 = counts > 2
+    starts_gt2 = starts[mask_gt2]
+    counts_gt2 = counts[mask_gt2]
+
+    for s, c in zip(starts_gt2.tolist(), counts_gt2.tolist()):
+        fs = face_sorted[s : s + c]
+        ls = local_sorted[s : s + c]
+
+        for k in range(c):
+            f = fs[k]
+            le = ls[k]
+            others = fs[fs != f]
+
+            if others.numel() > 0:
                 FAF[f, le] = others[0]
+            else:
+                FAF[f, le] = f
 
     return FAF
 
@@ -141,7 +154,7 @@ def extract_features(pos, faces):
     return feats
 
 
-def extract_features_local(pos, faces):
+def extract_features_local(pos, faces, FAF=None):
     # order invariant features
     vecs1 = pos[faces[:, 1]] - pos[faces[:, 0]]
     vecs2 = pos[faces[:, 2]] - pos[faces[:, 1]]
@@ -153,7 +166,8 @@ def extract_features_local(pos, faces):
     area_sq = s * (s - a) * (s - b) * (s - c)
     face_normals = torch.cross(vecs1, vecs2, dim=1)
     center_pos = (pos[faces[:, 0]] + pos[faces[:, 1]] + pos[faces[:, 2]]) / 3
-    FAF = compute_face_adjacency(faces)
+    if FAF is None:
+        FAF = compute_face_adjacency(faces)
     pos0, pos1, pos2 = pos[faces[:, 0]], pos[faces[:, 1]], pos[faces[:, 2]]
     center_neigh0 = (pos0[FAF[:, 0]] + pos1[FAF[:, 0]] + pos2[FAF[:, 0]]) / 3
     center_neigh1 = (pos0[FAF[:, 1]] + pos1[FAF[:, 1]] + pos2[FAF[:, 1]]) / 3
@@ -319,19 +333,23 @@ def build_ddacs_hierarchy(pos_l0, face_l0, num_levels=3):
         face_list.append(faces)
         parent_list.append(parent)
 
+    FAF_list = [compute_face_adjacency(face_list[i]) for i in range(len(face_list))]
+
     data = Data(
-        # Final target for WrappingNet:
         pos=pos_list[-1],
         face=face_list[-1].T.contiguous(),
-        # Explicit hierarchy:
         pos_l0=pos_list[0],
         face_l0=face_list[0].T.contiguous(),
+        FAF_l0=FAF_list[0],
         pos_l1=pos_list[1],
         face_l1=face_list[1].T.contiguous(),
+        FAF_l1=FAF_list[1],
         pos_l2=pos_list[2],
         face_l2=face_list[2].T.contiguous(),
+        FAF_l2=FAF_list[2],
         pos_l3=pos_list[3],
         face_l3=face_list[3].T.contiguous(),
+        FAF_l3=FAF_list[3],
         face_parent_1_to_0=parent_list[0],
         face_parent_2_to_1=parent_list[1],
         face_parent_3_to_2=parent_list[2],
